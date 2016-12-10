@@ -611,6 +611,18 @@ sgx () {
 		cleanup
 	fi
 }
+xenomai () {
+	#echo "dir: xenomai - ipipe"
+	KDIR="$(pwd)"
+
+	cd ${KDIR}
+
+	echo "dir: xenomai - prepare_kernel"
+	${DIR}/ignore/xenomai/scripts/prepare-kernel.sh --linux=. --arch=arm --ipipe=${DIR}/ignore/xenomai/kernel/cobalt/arch/arm/patches/ipipe-core-4.1.18-arm-8.patch
+
+}
+
+
 
 ###
 reverts
@@ -622,6 +634,7 @@ bbb_overlays
 beaglebone
 quieter
 sgx
+xenomai
 
 packaging () {
 	echo "dir: packaging"
