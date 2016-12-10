@@ -6,7 +6,7 @@ config="omap2plus_defconfig"
 
 build_prefix="bone"
 branch_prefix="am33x-v"
-branch_postfix=""
+branch_postfix="-xenomai"
 
 #arm
 KERNEL_ARCH=arm
