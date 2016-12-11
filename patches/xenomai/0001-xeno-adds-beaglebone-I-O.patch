@@ -1,0 +1,31 @@
+From fe65ee1affc91ff96afc08aa7b34c7ed153b6cd9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=98yvind=20Netland?= <oyvind@netland.name>
+Date: Sun, 11 Dec 2016 20:27:22 +0100
+Subject: [PATCH] adds beaglebone I/O/
+
+---
+ kernel/drivers/Kconfig  | 1 +
+ kernel/drivers/Makefile | 2 +-
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/drivers/Kconfig b/kernel/drivers/Kconfig
+index a8b4c26..8dc8f97 100644
+--- a/kernel/drivers/Kconfig
++++ b/kernel/drivers/Kconfig
+@@ -28,5 +28,6 @@ source "drivers/xenomai/net/Kconfig"
+ source "drivers/xenomai/analogy/Kconfig"
+ source "drivers/xenomai/ipc/Kconfig"
+ source "drivers/xenomai/udd/Kconfig"
++source "drivers/xenomai/beaglebone/Kconfig"
+ 
+ endmenu
+diff --git a/kernel/drivers/Makefile b/kernel/drivers/Makefile
+index 4d80f68..fd30b3d 100644
+--- a/kernel/drivers/Makefile
++++ b/kernel/drivers/Makefile
+@@ -1 +1 @@
+-obj-$(CONFIG_XENOMAI) += autotune/ serial/ testing/ can/ net/ analogy/ ipc/ udd/
++obj-$(CONFIG_XENOMAI) += autotune/ serial/ testing/ can/ net/ analogy/ ipc/ udd/ beaglebone/
+-- 
+2.7.4
+

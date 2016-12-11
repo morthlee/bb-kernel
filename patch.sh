@@ -620,6 +620,11 @@ xenomai () {
 	echo "dir: xenomai - prepare_kernel"
 	${DIR}/ignore/xenomai/scripts/prepare-kernel.sh --linux=. --arch=arm --ipipe=${DIR}/ignore/xenomai/kernel/cobalt/arch/arm/patches/ipipe-core-4.1.18-arm-8.patch
 
+	${git} "${DIR}/patches/xenomai/0001-adds-beaglebone-I-O.patch"
+
+	sed  -i '/\endmenu/i source "drivers/xenomai/beaglebone/Kconfig"' ${DIR}/ignore/xenomai/kernel/drivers/Kconfig
+	echo "obj-\$(CONFIG_XENOMAI) += beaglebone/" >> ${DIR}/ignore/xenomai/kernel/drivers/Makefile
+
 }
 
 

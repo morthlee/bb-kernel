@@ -1,0 +1,864 @@
+From af8a79989c1fa60b2fd91c24be9b081b74260eaa Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=98yvind=20Netland?= <oyvind@netland.name>
+Date: Sun, 11 Dec 2016 20:29:44 +0100
+Subject: [PATCH] adds beaglebone I/O
+
+---
+ drivers/xenomai/beaglebone/Kconfig  |  16 ++
+ drivers/xenomai/beaglebone/Makefile |   7 +
+ drivers/xenomai/beaglebone/rtgpio.c | 396 ++++++++++++++++++++++++++++++++++++
+ drivers/xenomai/beaglebone/rtgpio.h |  43 ++++
+ drivers/xenomai/beaglebone/rtpwm.c  | 309 ++++++++++++++++++++++++++++
+ drivers/xenomai/beaglebone/rtpwm.h  |  34 ++++
+ 6 files changed, 805 insertions(+)
+ create mode 100644 drivers/xenomai/beaglebone/Kconfig
+ create mode 100644 drivers/xenomai/beaglebone/Makefile
+ create mode 100755 drivers/xenomai/beaglebone/rtgpio.c
+ create mode 100644 drivers/xenomai/beaglebone/rtgpio.h
+ create mode 100755 drivers/xenomai/beaglebone/rtpwm.c
+ create mode 100644 drivers/xenomai/beaglebone/rtpwm.h
+
+diff --git a/drivers/xenomai/beaglebone/Kconfig b/drivers/xenomai/beaglebone/Kconfig
+new file mode 100644
+index 0000000..1f9586a
+--- /dev/null
++++ b/drivers/xenomai/beaglebone/Kconfig
+@@ -0,0 +1,16 @@
++menu "Beaglebone RTDM I/O"
++visible if ARM
++
++config XENO_DRIVERS_BB_GPIO
++	tristate "Beaglebone GPIO RTDM"
++	help
++
++	A RTDM-based driver for using Beaglebone GPIO.
++
++config XENO_DRIVERS_BB_PWM
++        tristate "Beaglebone PWM RTDM"
++        help
++
++        A RTDM-based driver for using Beaglebone PWM.
++
++endmenu
+diff --git a/drivers/xenomai/beaglebone/Makefile b/drivers/xenomai/beaglebone/Makefile
+new file mode 100644
+index 0000000..1fd85d3
+--- /dev/null
++++ b/drivers/xenomai/beaglebone/Makefile
+@@ -0,0 +1,7 @@
++ccflags-y += -Ikernel
++
++obj-$(CONFIG_XENO_DRIVERS_BB_GPIO) += xeno_rtgpio.o
++obj-$(CONFIG_XENO_DRIVERS_BB_PWM) += xeno_rtpwm.o
++
++xeno_rtgpio-y := rtgpio.o
++xeno_rtpwm-y := rtpwm.o
+diff --git a/drivers/xenomai/beaglebone/rtgpio.c b/drivers/xenomai/beaglebone/rtgpio.c
+new file mode 100755
+index 0000000..2c150f9
+--- /dev/null
++++ b/drivers/xenomai/beaglebone/rtgpio.c
+@@ -0,0 +1,396 @@
++#include <linux/module.h>
++#include <linux/gpio.h>
++#include <linux/pwm.h>
++#include <linux/kernel.h>
++#include <linux/string.h>
++
++#include <rtdm/rtdm.h>
++#include <rtdm/driver.h>
++
++#include "rtgpio.h"
++
++//#define DEBUG
++#ifdef DEBUG
++#define PRINT_DEBUG(fmt, args...)	rtdm_printk(KERN_DEBUG fmt, ## args)
++#else
++#define PRINT_DEBUG(fmt, args...)	/* Don't do anything in release builds */
++#endif
++
++#define INFO
++#ifdef INFO
++#define PRINT_INFO(fmt, args...)	rtdm_printk(KERN_INFO fmt, ## args)
++#else
++#define PRINT_INFO(fmt, args...)	/* Don't do anything in release builds */
++#endif
++
++#define ERR
++#ifdef ERR
++#define PRINT_ERR(fmt, args...)		rtdm_printk(KERN_ERR fmt, ## args)
++#else
++#define PRINT_ERR(fmt, args...)		/* Don't do anything in release builds */
++#endif
++
++struct rtgpio_data {
++        int dir;
++        int edge;
++        int gpio_n;
++		nanosecs_rel_t timeout;
++        rtdm_irq_t irq;
++        rtdm_event_t irq_event;
++        int mux;
++};
++
++static int rtgpio_open(struct rtdm_fd *fd, int oflags);
++static ssize_t rtgpio_read_rt(struct rtdm_fd *fd, void __user *buf, size_t size);
++static ssize_t rtgpio_write_rt(struct rtdm_fd *fd, const void __user *buf, size_t size);
++static int rtgpio_ioctl_rt(struct rtdm_fd *fd, unsigned int request, void *arg);
++static void rtgpio_close(struct rtdm_fd *fd);
++
++static struct rtdm_driver _rtgpio_driver = {
++	.profile_info = RTDM_PROFILE_INFO("rtgpio", RTDM_CLASS_EXPERIMENTAL,
++			RTDM_SUBCLASS_GENERIC, 42),
++	.device_flags = RTDM_NAMED_DEVICE | RTDM_EXCLUSIVE,
++	.device_count = 3,
++	.context_size = sizeof(struct rtgpio_data),
++	.ops = {
++		.open = rtgpio_open,
++		.read_rt = rtgpio_read_rt,
++		.write_rt = rtgpio_write_rt,
++		.ioctl_rt = rtgpio_ioctl_rt,
++		.close = rtgpio_close,
++	},
++};
++
++static struct rtdm_device _rtgpio_devices[3] = {
++	{
++		.driver = &_rtgpio_driver,
++		.label = "gpio66",
++	},
++	{
++		.driver = &_rtgpio_driver,
++		.label = "gpio67",
++	},
++	{
++		.driver = &_rtgpio_driver,
++		.label = "gpio69",
++	},
++};
++
++static struct rtgpio_data _rtgpio_data[3] = {
++	{
++		.gpio_n = 66,
++	},
++	{
++		.gpio_n = 67,
++	},
++	{
++		.gpio_n = 69,
++	},
++};
++
++static int rtgpio_irq_f(rtdm_irq_t *irq)
++{
++	struct rtgpio_data *data =  rtdm_irq_get_arg(irq, struct rtgpio_data);
++
++    PRINT_DEBUG("RTGPIO %d - irq\n", data->gpio_n);
++
++    rtdm_event_pulse(&data->irq_event);
++
++    return 1;
++}
++
++static int rtgpio_open(struct rtdm_fd *fd, int oflags)
++{
++	int ret = 0;
++    int irq_n;
++	struct rtdm_dev_context *context;
++	struct rtgpio_data *data;
++
++	context = rtdm_fd_to_context(fd);
++	data = (struct rtgpio_data*)context->device->device_data;
++
++    PRINT_INFO("RTGPIO %d - open %d\n", data->gpio_n, oflags);
++
++    data->dir = oflags;
++    data->edge = 0;
++
++    switch (data->dir) {
++    case RTGPIO_DIR_IN:
++    	PRINT_DEBUG("RTGPIO %d - request GPIO in\n", data->gpio_n);
++		ret = gpio_request_one(data->gpio_n, GPIOF_DIR_IN, THIS_MODULE->name);
++		if (ret < 0) {
++			goto rollback_request;
++		}
++
++		break;
++
++    case RTGPIO_DIR_OUT:
++    	PRINT_DEBUG("RTGPIO %d - request GPIO out\n", data->gpio_n);
++		ret = gpio_request_one(data->gpio_n, GPIOF_DIR_OUT, THIS_MODULE->name);
++		if (ret < 0) {
++			goto rollback_request;
++		}
++
++		break;
++
++    case RTGPIO_DIR_IRQ:
++		irq_n = gpio_to_irq(data->gpio_n);
++
++		PRINT_DEBUG("RTGPIO %d - request GPIO\n", data->gpio_n);
++		ret = gpio_request_one(data->gpio_n, GPIOF_DIR_IN, THIS_MODULE->name);
++		if (ret < 0) {
++			goto rollback_request;
++		}
++
++		PRINT_DEBUG("RTGPIO %d - set IRQ type\n", data->gpio_n);
++		data->edge = RTGPIO_IOCTL_EDGE_BOTH;
++		ret = irq_set_irq_type(irq_n, IRQ_TYPE_EDGE_BOTH);
++		if (ret < 0) {
++			goto rollback_irq;
++		}
++
++		PRINT_DEBUG("RTGPIO %d - request IRQ\n", data->gpio_n);
++		ret = rtdm_irq_request(&data->irq, irq_n, rtgpio_irq_f,
++				0, THIS_MODULE->name, (void*)data);
++		if (ret < 0) {
++			goto rollback_irq;
++		}
++
++		PRINT_DEBUG("RTGPIO %d - enable IRQ\n", data->gpio_n);
++		ret = rtdm_irq_enable(&data->irq);
++		if (ret < 0) {
++			goto rollback_irq_enable;
++		}
++
++		PRINT_DEBUG("RTGPIO %d - init event\n", data->gpio_n);
++		rtdm_event_init(&data->irq_event, 0);
++
++		break;
++
++    default:
++    	return -EPERM;
++    }
++
++    return 0; /* success */
++
++rollback_irq_enable:
++	rtdm_irq_free(&data->irq);
++rollback_irq:
++	gpio_free(data->gpio_n);
++rollback_request:
++	PRINT_DEBUG("RTGPIO %d - open failed %d\n", data->gpio_n, ret);
++    return ret;
++}
++
++static ssize_t rtgpio_read_rt(struct rtdm_fd *fd, void __user *buf, size_t size) {
++	s16 ret;
++	struct rtdm_dev_context *context;
++	struct rtgpio_data *data;
++
++	context = rtdm_fd_to_context(fd);
++	data = (struct rtgpio_data*)context->device->device_data;
++
++	PRINT_DEBUG("RTGPIO %d - read\n", data->gpio_n);
++
++    if (data->dir == RTGPIO_DIR_IRQ) {
++    	rtdm_event_timedwait(&(data->irq_event), data->timeout, NULL);
++    }
++
++    if ((data->dir == RTGPIO_DIR_IN) || (data->dir == RTGPIO_DIR_IRQ)) {
++		if (gpio_get_value(data->gpio_n) == 1) {
++			ret = rtdm_safe_copy_to_user(fd, buf, "1", 2);
++			PRINT_DEBUG("RTGPIO %d - get 1\n", data->gpio_n);
++		} else {
++			ret = rtdm_safe_copy_to_user(fd, buf, "0", 2);
++			PRINT_DEBUG("RTGPIO %d - get 0\n", data->gpio_n);
++		}
++
++		if (ret <= 0) {
++			return ret;
++		}
++		return 2;
++    }
++
++	return 0;
++}
++
++static ssize_t rtgpio_write_rt(struct rtdm_fd *fd, const void __user *buf, size_t size)
++{
++	s16 ret;
++	u8 buf2[100];
++	struct rtdm_dev_context *context;
++	struct rtgpio_data *data;
++
++	context = rtdm_fd_to_context(fd);
++	data = (struct rtgpio_data*)context->device->device_data;
++
++    if (data->dir == RTGPIO_DIR_OUT) {
++
++    	ret = rtdm_safe_copy_from_user(fd, buf2, buf, size);
++    	if (ret < 0) {
++    		return ret;
++    	}
++    	buf2[size] = 0;
++
++    	if (buf2[0] == '0') {
++    		PRINT_DEBUG("RTGPIO %d - set 0\n", data->gpio_n);
++    		gpio_set_value(data->gpio_n, 0);
++    	} else {
++    		PRINT_DEBUG("RTGPIO %d - set 1\n", data->gpio_n);
++    		gpio_set_value(data->gpio_n, 1);
++    	}
++
++    	return size;
++    }
++
++	return 0;
++}
++
++static int rtgpio_ioctl_rt(struct rtdm_fd *fd, unsigned int request, void *arg)
++{
++	s16 ret;
++	int tmp;
++	struct rtdm_dev_context *context;
++	struct rtgpio_data *data;
++
++	context = rtdm_fd_to_context(fd);
++	data = (struct rtgpio_data*)context->device->device_data;
++
++    switch (request) {
++    case RTGPIO_IOCTL_DIR_GET:
++    	PRINT_DEBUG("RTDM GPIO %d - get dir %i\n", data->gpio_n, data->dir);
++    	return rtdm_safe_copy_to_user(fd, arg, &(data->dir), sizeof(data->dir));
++
++    case RTGPIO_IOCTL_EDGE_GET:
++        PRINT_DEBUG("RTDM GPIO %d - get edge %i\n", data->gpio_n, data->edge);
++    	return rtdm_safe_copy_to_user(fd, arg, &(data->edge), sizeof(data->edge));
++
++    case RTGPIO_IOCTL_EDGE_SET:
++        if (data->dir != RTGPIO_DIR_IRQ) {
++        	return -ENOTTY;
++        }
++
++        ret = rtdm_safe_copy_from_user(fd, &tmp, arg, sizeof(int));
++        if (ret) {
++        	return ret;
++        }
++
++        data->edge = tmp;
++        switch (data->edge) {
++        case RTGPIO_IOCTL_EDGE_RISING:
++        	return irq_set_irq_type(gpio_to_irq(data->gpio_n), IRQ_TYPE_EDGE_RISING);
++        case RTGPIO_IOCTL_EDGE_FALLING:
++        	return irq_set_irq_type(gpio_to_irq(data->gpio_n), IRQ_TYPE_EDGE_FALLING);
++        case RTGPIO_IOCTL_EDGE_BOTH:
++        	return irq_set_irq_type(gpio_to_irq(data->gpio_n), IRQ_TYPE_EDGE_BOTH);
++        default:
++            return -EINVAL;
++        }
++
++	case RTGPIO_IOCTL_TIMEOUT_GET:
++		if (data->dir == RTGPIO_DIR_IRQ) {
++			PRINT_DEBUG("RTDM GPIO %d - get timeout %d\n", data->gpio_n, data->timeout);
++			return rtdm_safe_copy_to_user(fd, arg, &data->timeout, sizeof(data->timeout));
++		} else {
++			return -EINVAL;
++		}
++
++	case RTGPIO_IOCTL_TIMEOUT_SET:
++		if (data->dir != RTGPIO_DIR_IRQ) {
++			return -ENOTTY;
++		}
++
++		ret = rtdm_safe_copy_from_user(fd, &data->timeout, arg, sizeof(data->timeout));
++		if (ret < sizeof(data->timeout)) {
++			return ret;
++		}
++
++		if (data->dir == RTGPIO_DIR_IRQ) {
++			data->timeout = tmp;
++			return 0;
++		} else {
++			return -EINVAL;
++		}
++
++    default:
++    	PRINT_DEBUG("RTDM GPIO %d - incorrect ioctl\n", data->gpio_n);
++    	return -ENOTTY;
++    }
++}
++
++static void rtgpio_close(struct rtdm_fd *fd)
++{
++	struct rtdm_dev_context *context;
++	struct rtgpio_data *data;
++
++	context = rtdm_fd_to_context(fd);
++	data = (struct rtgpio_data*)context->device->device_data;
++
++	if (data->dir == RTGPIO_DIR_IRQ) {
++		rtdm_irq_free(&data->irq);
++	}
++
++    gpio_free(data->gpio_n);
++
++    PRINT_INFO("RTGPIO - close\n");
++}
++
++static int rtgpio_device_init(int n)
++{
++	int ret;
++
++	PRINT_INFO("RTGPIO initialize %i\n", n);
++	_rtgpio_devices[n].device_data = &_rtgpio_data[n];
++	ret = rtdm_dev_register(&_rtgpio_devices[n]);
++	if (ret < 0) {
++		PRINT_ERR("RTGPIO ERROR initialize %i\n", n);
++		goto rollback_dev_register;
++	}
++
++	return 0; // success
++
++rollback_dev_register:
++	return ret;
++}
++
++
++static void rtgpio_device_exit(int n)
++{
++	rtdm_dev_unregister(&_rtgpio_devices[n]);
++}
++
++int __init rtgpio_init(void)
++{
++	u16 i;
++	s16 ret;
++
++    for (i = 0; i < ARRAY_SIZE(_rtgpio_devices); i++) {
++    	ret = rtgpio_device_init(i);
++    	if (ret < 0) {
++			PRINT_ERR("RTGPIO ERROR initialize rtdm motor 0\n");
++			return -1;
++    	}
++    }
++
++	PRINT_INFO("RTGPIO initialized\n");
++
++	return 0; // success
++}
++
++void __exit rtgpio_exit(void)
++{
++	u16 i;
++
++    for (i = 0; i < ARRAY_SIZE(_rtgpio_devices); i++) {
++    	rtgpio_device_exit(i);
++    }
++
++    PRINT_INFO("RTGPIO exit\n");
++}
++
++module_init(rtgpio_init);
++module_exit(rtgpio_exit);
++
++MODULE_AUTHOR("Øyvind Netland <oyvind@netland.name>");
++MODULE_DESCRIPTION("RTDM GPIO module for Beaglebone");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/xenomai/beaglebone/rtgpio.h b/drivers/xenomai/beaglebone/rtgpio.h
+new file mode 100644
+index 0000000..2623362
+--- /dev/null
++++ b/drivers/xenomai/beaglebone/rtgpio.h
+@@ -0,0 +1,43 @@
++/*
++ * rtgpio.h
++ *
++ *  Created on: Sep 26, 2016
++ *      Author: oyvindne
++ */
++
++#ifndef RTGPIO_H_
++#define RTGPIO_H_
++
++#include <rtdm/rtdm.h>
++
++/* GPIO direction */
++#define RTGPIO_DIR_IN             1
++#define RTGPIO_DIR_OUT            2
++#define RTGPIO_DIR_IRQ            3
++
++/* edge ioctl commands */
++#define RTGPIO_IOCTL_EDGE_RISING        1
++#define RTGPIO_IOCTL_EDGE_FALLING       2
++#define RTGPIO_IOCTL_EDGE_BOTH          3
++
++/* pulldownup ioctl commands */
++#define RTGPIO_IOCTL_NOT_ACTIVE_LOW     1
++#define RTGPIO_IOCTL_ACTIVE_LOW         2
++
++/* ioctl codes */
++#define RTGPIO_IOCTL_DIR_GET \
++        _IOR(RTDM_CLASS_EXPERIMENTAL, 0x01, int)
++
++#define RTGPIO_IOCTL_EDGE_GET \
++        _IOR(RTDM_CLASS_EXPERIMENTAL, 0x02, int)
++
++#define RTGPIO_IOCTL_EDGE_SET \
++        _IOW(RTDM_CLASS_EXPERIMENTAL, 0x03, int)
++
++#define RTGPIO_IOCTL_TIMEOUT_GET \
++        _IOR(RTDM_CLASS_EXPERIMENTAL, 0x04, int)
++
++#define RTGPIO_IOCTL_TIMEOUT_SET \
++        _IOW(RTDM_CLASS_EXPERIMENTAL, 0x05, int)
++
++#endif /* RTGPIO_H_ */
+diff --git a/drivers/xenomai/beaglebone/rtpwm.c b/drivers/xenomai/beaglebone/rtpwm.c
+new file mode 100755
+index 0000000..f67e57a
+--- /dev/null
++++ b/drivers/xenomai/beaglebone/rtpwm.c
+@@ -0,0 +1,309 @@
++#include "rtpwm.h"
++
++#include <linux/module.h>
++#include <linux/gpio.h>
++#include <linux/pwm.h>
++#include <linux/kernel.h>
++#include <linux/string.h>
++
++#include <rtdm/rtdm.h>
++#include <rtdm/driver.h>
++
++
++#define DEBUG
++#ifdef DEBUG
++#define PRINT_DEBUG(fmt, args...)	rtdm_printk(KERN_DEBUG fmt, ## args)
++#else
++#define PRINT_DEBUG(fmt, args...)	/* Don't do anything in release builds */
++#endif
++
++#define INFO
++#ifdef INFO
++#define PRINT_INFO(fmt, args...)	rtdm_printk(KERN_INFO fmt, ## args)
++#else
++#define PRINT_INFO(fmt, args...)	/* Don't do anything in release builds */
++#endif
++
++#define ERR
++#ifdef ERR
++#define PRINT_ERR(fmt, args...)		rtdm_printk(KERN_ERR fmt, ## args)
++#else
++#define PRINT_ERR(fmt, args...)		/* Don't do anything in release builds */
++#endif
++
++struct rtpwm_data {
++	int pwma_n;
++	int pwmb_n;
++	struct pwm_device *pwma;
++	struct pwm_device *pwmb;
++};
++
++static int rtpwm_open(struct rtdm_fd *fd, int oflags);
++static int rtpwm_ioctl_rt(struct rtdm_fd *fd, unsigned int request, void *arg);
++static void rtpwm_close(struct rtdm_fd *fd);
++
++static struct rtdm_driver _rtpwm_driver = {
++	.profile_info = RTDM_PROFILE_INFO("rtpwm", RTDM_CLASS_EXPERIMENTAL,
++			RTDM_SUBCLASS_GENERIC, 42),
++	.device_flags = RTDM_NAMED_DEVICE | RTDM_EXCLUSIVE,
++	.device_count = 3,
++	.context_size = sizeof(struct rtpwm_data),
++	.ops = {
++		.open = rtpwm_open,
++		.ioctl_rt = rtpwm_ioctl_rt,
++		.close = rtpwm_close,
++	},
++};
++
++static struct rtdm_device _rtpwm_devices[3] = {
++	{
++		.driver = &_rtpwm_driver,
++		.label = "pwm0",
++	},
++	{
++		.driver = &_rtpwm_driver,
++		.label = "pwm1",
++	},
++	{
++		.driver = &_rtpwm_driver,
++		.label = "pwm2",
++	},
++};
++
++static struct rtpwm_data _rtpwm_data[3] = {
++	{
++		.pwma_n = 0,
++		.pwmb_n = 1,
++	},
++	{
++		.pwma_n = 2,
++		.pwmb_n = 3,
++	},
++	{
++		.pwma_n = 4,
++		.pwmb_n = 5,
++	},
++};
++
++static int rtpwm_open(struct rtdm_fd *fd, int oflags)
++{
++	long period = 1000000;
++	struct rtdm_dev_context *context;
++	struct rtpwm_data *data;
++
++	PRINT_INFO("RTDM open %i\n", oflags);
++
++	if (oflags != 0) {
++		period = 1000000*oflags;
++	}
++
++	context = rtdm_fd_to_context(fd);
++	data = (struct rtpwm_data*)context->device->device_data;
++
++	pwm_config(data->pwma, 0, period);
++	pwm_enable(data->pwma);
++
++	pwm_config(data->pwmb, 0, period);
++	pwm_enable(data->pwmb);
++
++	return 0;
++}
++
++static int rtpwm_ioctl_rt(struct rtdm_fd *fd, unsigned int request, void *arg)
++{
++	int ret;
++	struct rtdm_dev_context *context;
++	struct rtpwm_data *data;
++	int int_tmp;
++	int period_tmp;
++
++	context = rtdm_fd_to_context(fd);
++	data = (struct rtpwm_data*)context->device->device_data;
++
++    switch (request) {
++    case RTPWM_IOCTL_PERIOD_GET:
++    	int_tmp = pwm_get_period(data->pwma);
++    	PRINT_DEBUG("RTDM PWM %s - get period %i ns\n", context->device->label, int_tmp);
++
++    	return rtdm_safe_copy_to_user(fd, arg, &int_tmp, sizeof(int_tmp));
++
++    case RTPWM_IOCTL_DUTYA_GET:
++    	int_tmp = (100*pwm_get_duty_cycle(data->pwma)) / pwm_get_period(data->pwma);
++    	PRINT_DEBUG("RTDM PWM %s - get duty a %i %\n", context->device->label, int_tmp);
++    	return rtdm_safe_copy_to_user(fd, arg, &int_tmp, sizeof(int_tmp));
++
++	case RTPWM_IOCTL_DUTYA_NS_GET:
++		int_tmp = pwm_get_duty_cycle(data->pwma);
++		PRINT_DEBUG("RTDM PWM %s - get duty a %i ns\n", context->device->label, int_tmp);
++		return rtdm_safe_copy_to_user(fd, arg, &int_tmp, sizeof(int_tmp));
++
++    case RTPWM_IOCTL_DUTYB_GET:
++    	int_tmp = (100*pwm_get_duty_cycle(data->pwmb)) / pwm_get_period(data->pwmb);
++    	PRINT_DEBUG("RTDM PWM %s - get duty b %i %\n", context->device->label, int_tmp);
++    	return rtdm_safe_copy_to_user(fd, arg, &int_tmp, sizeof(int_tmp));
++
++	case RTPWM_IOCTL_DUTYB_NS_GET:
++		int_tmp = pwm_get_duty_cycle(data->pwmb);
++		PRINT_DEBUG("RTDM PWM %s - get duty b %i ns\n", context->device->label, int_tmp);
++		return rtdm_safe_copy_to_user(fd, arg, &int_tmp, sizeof(int_tmp));
++
++	case RTPWM_IOCTL_DUTYA_SET:
++        ret = rtdm_safe_copy_from_user(fd, &int_tmp, arg, sizeof(int_tmp));
++        if (ret < 0) {
++        	return ret;
++        }
++
++        period_tmp = pwm_get_period(data->pwma);
++        if (period_tmp <= 0) {
++        	return -1;
++        }
++
++        PRINT_DEBUG("RTDM PWM %s - set duty a %i - %i ns\n", context->device->label, int_tmp,
++        		(int_tmp*period_tmp)/100);
++
++        ret = pwm_config(data->pwma, (int_tmp*period_tmp)/100, period_tmp);
++        return ret;
++
++	case RTPWM_IOCTL_DUTYA_NS_SET:
++        ret = rtdm_safe_copy_from_user(fd, &int_tmp, arg, sizeof(int_tmp));
++        if (ret < 0) {
++        	return ret;
++        }
++
++        period_tmp = pwm_get_period(data->pwma);
++        if (period_tmp <= 0) {
++        	return -1;
++        }
++
++        PRINT_DEBUG("RTDM PWM %s - set duty a %i ns\n", context->device->label, int_tmp);
++
++        ret = pwm_config(data->pwma, int_tmp, period_tmp);
++        return ret;
++
++	case RTPWM_IOCTL_DUTYB_SET:
++        ret = rtdm_safe_copy_from_user(fd, &int_tmp, arg, sizeof(int_tmp));
++        if (ret < 0) {
++        	return ret;
++        }
++
++        period_tmp = pwm_get_period(data->pwma);
++        if (period_tmp <= 0) {
++        	return -1;
++        }
++
++        PRINT_DEBUG("RTDM PWM %s - set duty b %i - %i ns\n", context->device->label, int_tmp,
++        		(int_tmp*period_tmp)/100);
++
++        ret = pwm_config(data->pwmb, (int_tmp*period_tmp)/100, period_tmp);
++        return ret;
++
++	case RTPWM_IOCTL_DUTYB_NS_SET:
++        ret = rtdm_safe_copy_from_user(fd, &int_tmp, arg, sizeof(int_tmp));
++        if (ret < 0) {
++        	return ret;
++        }
++
++        period_tmp = pwm_get_period(data->pwma);
++        if (period_tmp <= 0) {
++        	return -1;
++        }
++
++        PRINT_DEBUG("RTDM PWM %s - set duty b %i ns\n", context->device->label, int_tmp);
++
++        ret = pwm_config(data->pwmb, int_tmp, period_tmp);
++        return ret;
++    }
++
++    return -1;
++}
++
++static void rtpwm_close(struct rtdm_fd *fd)
++{
++	struct rtdm_dev_context *context;
++	struct rtpwm_data *data;
++
++	context = rtdm_fd_to_context(fd);
++	data = (struct rtpwm_data*)context->device->device_data;
++
++	pwm_disable(data->pwma);
++	pwm_disable(data->pwmb);
++}
++
++static int rtpwm_device_init(int n)
++{
++	int ret;
++
++	PRINT_INFO("RTPWM initialize %i (test)\n", n);
++	_rtpwm_devices[n].device_data = &_rtpwm_data[n];
++	ret = rtdm_dev_register(&_rtpwm_devices[n]);
++	if (ret < 0) {
++		PRINT_ERR("RTGPIO ERROR initialize %i\n", n);
++		goto rollback_dev_register;
++	}
++
++	_rtpwm_data[n].pwma = pwm_request(_rtpwm_data[n].pwma_n, "PWM A");
++	if (_rtpwm_data[n].pwma == NULL) {
++		PRINT_ERR("RTGPIO ERROR initialize PWM%iA\n", n);
++		goto rollback_pwma;
++	}
++
++	_rtpwm_data[n].pwmb = pwm_request(_rtpwm_data[n].pwmb_n, "PWM B");
++	if (_rtpwm_data[n].pwmb == NULL) {
++		PRINT_ERR("RTGPIO ERROR initialize PWM%iB\n", n);
++		goto rollback_pwmb;
++	}
++
++	return 0; // success
++
++rollback_pwmb:
++	pwm_free(_rtpwm_data[n].pwma);
++rollback_pwma:
++	rtdm_dev_unregister(&_rtpwm_devices[n]);
++rollback_dev_register:
++	return ret;
++}
++
++
++static void rtpwm_device_exit(int n)
++{
++	PRINT_INFO("RTPWM exit %i\n", n);
++	pwm_free(_rtpwm_data[n].pwma);
++	pwm_free(_rtpwm_data[n].pwmb);
++	rtdm_dev_unregister(&_rtpwm_devices[n]);
++}
++
++int __init rtpwm_init(void)
++{
++	u16 i;
++	s16 ret;
++
++    for (i = 0; i < ARRAY_SIZE(_rtpwm_devices); i++) {
++    	ret = rtpwm_device_init(i);
++    	if (ret < 0) {
++			PRINT_ERR("RTPWM failed to initialize pwm %i\n", i);
++			return -1;
++    	}
++    }
++
++	PRINT_INFO("RTPWM initialized\n");
++
++	return 0; // success
++}
++
++void __exit rtpwm_exit(void)
++{
++	u16 i;
++
++    for (i = 0; i < ARRAY_SIZE(_rtpwm_devices); i++) {
++    	rtpwm_device_exit(i);
++    }
++
++    PRINT_INFO("RTPWM exit\n");
++}
++
++module_init(rtpwm_init);
++module_exit(rtpwm_exit);
++
++MODULE_AUTHOR("Øyvind Netland <oyvind@netland.name>");
++MODULE_DESCRIPTION("RTDM PWM module for Beaglebone");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/xenomai/beaglebone/rtpwm.h b/drivers/xenomai/beaglebone/rtpwm.h
+new file mode 100644
+index 0000000..3aeb6bb
+--- /dev/null
++++ b/drivers/xenomai/beaglebone/rtpwm.h
+@@ -0,0 +1,34 @@
++#ifndef RTPWM_H_
++#define RTPWM_H_
++
++#include <rtdm/rtdm.h>
++
++/* ioctl codes */
++#define RTPWM_IOCTL_PERIOD_GET \
++        _IOR(RTDM_CLASS_EXPERIMENTAL, 0x11, int)
++
++#define RTPWM_IOCTL_DUTYA_GET \
++        _IOR(RTDM_CLASS_EXPERIMENTAL, 0x12, int)
++
++#define RTPWM_IOCTL_DUTYA_NS_GET \
++        _IOR(RTDM_CLASS_EXPERIMENTAL, 0x13, int)
++
++#define RTPWM_IOCTL_DUTYB_GET \
++        _IOR(RTDM_CLASS_EXPERIMENTAL, 0x14, int)
++
++#define RTPWM_IOCTL_DUTYB_NS_GET \
++        _IOR(RTDM_CLASS_EXPERIMENTAL, 0x15, int)
++
++#define RTPWM_IOCTL_DUTYA_SET \
++        _IOW(RTDM_CLASS_EXPERIMENTAL, 0x16, int)
++
++#define RTPWM_IOCTL_DUTYA_NS_SET \
++        _IOW(RTDM_CLASS_EXPERIMENTAL, 0x17, int)
++
++#define RTPWM_IOCTL_DUTYB_SET \
++        _IOW(RTDM_CLASS_EXPERIMENTAL, 0x18, int)
++
++#define RTPWM_IOCTL_DUTYB_NS_SET \
++        _IOW(RTDM_CLASS_EXPERIMENTAL, 0x19, int)
++
++#endif /* RTPWM_H_ */
+-- 
+2.7.4
+
