@@ -6,7 +6,7 @@ config="omap2plus_defconfig"
 
 build_prefix="bone"
 branch_prefix="am33x-v"
-branch_postfix="-xenomai"
+branch_postfix=""
 
 #arm
 KERNEL_ARCH=arm
@@ -25,7 +25,7 @@ toolchain="gcc_linaro_gnueabihf_4_9"
 #Kernel/Build
 KERNEL_REL=4.1
 KERNEL_TAG=${KERNEL_REL}.18
-BUILD=${build_prefix}20
+BUILD=${build_prefix}20-xenomai
 kernel_rt=".15-rt17"
 
 #v4.X-rcX + upto SHA
