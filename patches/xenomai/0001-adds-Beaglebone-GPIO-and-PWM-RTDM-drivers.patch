@@ -678,7 +678,7 @@ index 0000000..c23d117
 + * Exit a PWM device of a given number.
 + * @param n PWM number (in the list of this driver)
 + */
-+static void bbpwm_device_exit(int n)
++static void bbpwm_device_exit(int n);
 +
 +//! initialization of PWM data struct array, with all Beaglebone PWMs
 +static struct bbpwm_data _bbpwm_data[3] = {
