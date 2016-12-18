@@ -621,6 +621,7 @@ xenomai () {
 	${DIR}/ignore/xenomai/scripts/prepare-kernel.sh --linux=. --arch=arm --ipipe=${DIR}/ignore/xenomai/kernel/cobalt/arch/arm/patches/ipipe-core-4.1.18-arm-8.patch
 
 	${git} "${DIR}/patches/xenomai/0001-adds-Beaglebone-GPIO-and-PWM-RTDM-drivers.patch"
+	${git} "${DIR}/patches/xenomai/0001-add-PWM-to-devicetree.patch"
 
 	sed  -i '/\endmenu/i source "drivers/xenomai/beaglebone/Kconfig"' ${DIR}/ignore/xenomai/kernel/drivers/Kconfig
 	echo "obj-\$(CONFIG_XENOMAI) += beaglebone/" >> ${DIR}/ignore/xenomai/kernel/drivers/Makefile
