@@ -622,6 +622,7 @@ xenomai () {
 
 	${git} "${DIR}/patches/xenomai/0001-adds-Beaglebone-GPIO-and-PWM-RTDM-drivers.patch"
 	${git} "${DIR}/patches/xenomai/0001-add-PWM-to-devicetree.patch"
+	${git} "${DIR}/patches/xenomai/0001-updates-bbgpio-driver.patch"
 
 	sed  -i '/\endmenu/i source "drivers/xenomai/beaglebone/Kconfig"' ${DIR}/ignore/xenomai/kernel/drivers/Kconfig
 	echo "obj-\$(CONFIG_XENOMAI) += beaglebone/" >> ${DIR}/ignore/xenomai/kernel/drivers/Makefile

@@ -379,6 +379,12 @@ CONFIG_XENO_DRIVERS_SWITCHTEST=y
 # CONFIG_XENO_DRIVERS_UDD is not set
 
 #
+# Beaglebone RTDM I/O
+#
+CONFIG_XENO_BB_GPIO=m
+CONFIG_XENO_BB_PWM=m
+
+#
 # Machine/platform-specific options
 #
 CONFIG_XENO_ARCH_UNLOCKED_SWITCH=y

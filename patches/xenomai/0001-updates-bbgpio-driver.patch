@@ -1,0 +1,199 @@
+From 2c5498242091b859528b22d3dc195e9949955a22 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=98yvind=20Netland?= <oyvind@netland.name>
+Date: Sun, 12 Feb 2017 20:58:54 +0100
+Subject: [PATCH] updates bbgpio driver
+
+---
+ drivers/xenomai/beaglebone/bbgpio.c | 143 +++++++++++++++++++++++++++++++++++-
+ 1 file changed, 140 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/xenomai/beaglebone/bbgpio.c b/drivers/xenomai/beaglebone/bbgpio.c
+index 772f69d..3ec845c 100755
+--- a/drivers/xenomai/beaglebone/bbgpio.c
++++ b/drivers/xenomai/beaglebone/bbgpio.c
+@@ -110,6 +110,32 @@ static struct bbgpio_data _bbgpio_data[] = {
+     {.gpio_n = 112},
+     {.gpio_n = 115},
+     {.gpio_n = 117},
++    {.gpio_n = 86},
++    {.gpio_n = 87},
++    {.gpio_n = 10},
++    {.gpio_n = 9},
++    {.gpio_n = 8},
++    {.gpio_n = 78},
++    {.gpio_n = 76},
++    {.gpio_n = 74},
++    {.gpio_n = 72},
++    {.gpio_n = 88},
++    {.gpio_n = 89},
++    {.gpio_n = 11},
++    {.gpio_n = 79},
++    {.gpio_n = 77},
++    {.gpio_n = 75},
++    {.gpio_n = 73},
++    {.gpio_n = 38},
++    {.gpio_n = 39},
++    {.gpio_n = 34},
++    {.gpio_n = 35},
++    {.gpio_n = 63},
++    {.gpio_n = 62},
++    {.gpio_n = 37},
++    {.gpio_n = 36},
++    {.gpio_n = 33},
++    {.gpio_n = 32},
+ };
+ 
+ //! the driver for the Beaglebone GPIO RTDM driver
+@@ -203,8 +229,113 @@ static struct rtdm_device _bbgpio_devices[] = {
+         .driver = &_bbgpio_driver,
+         .label = "gpio117_P9_27",
+     },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio86_P8_27_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio87_P8_29_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio10_P8_31_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio9_P8_33_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio8_P8_35_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio78_P8_37_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio76_P8_39_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio74_P8_41_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio72_P8_43_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio88_P8_28_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio89_P8_30_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio11_P8_32_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio79_P8_38_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio77_P8_40_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio75_P8_42_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio73_P8_44_lcd",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio38_P8_03_mmc",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio39_P8_04_mmc",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio34_P8_05_mmc",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio35_P8_06_mmc",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio63_P8_20_mmc",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio62_P8_21_mmc",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio37_P8_22_mmc",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio36_P8_23_mmc",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio33_P8_24_mmc",
++    },
++    {
++        .driver = &_bbgpio_driver,
++        .label = "gpio32_P8_25_mmc",
++    },
+ };
+ 
++
+ static int bbgpio_open(struct rtdm_fd *fd, int oflags)
+ {
+     int ret = 0;
+@@ -296,18 +427,24 @@ static ssize_t bbgpio_read_rt(struct rtdm_fd *fd, void __user *buf, size_t size)
+     switch (data->dir) {
+     case BBGPIO_DIR_IRQ:
+         // wait for an interrupt
+-        rtdm_event_timedwait(&(data->irq_event), data->timeout, NULL);
++        ret = rtdm_event_timedwait(&(data->irq_event), data->timeout, NULL);
++        if (ret < 0) {
++            return ret;
++        }
++
++        // no break, do the same as for input
+    
+     case BBGPIO_DIR_IN:
+         // read GPIO value and return to user space
+         // is performed for both input and IRQ
++
+         if (gpio_get_value(data->gpio_n) == 1) {
+             ret = rtdm_safe_copy_to_user(fd, buf, "1", 2);
+         } else {
+             ret = rtdm_safe_copy_to_user(fd, buf, "0", 2);
+         }
+ 
+-        if (ret <= 0) {
++        if (ret < 0) {
+             return ret;
+         }
+         return 2;
+@@ -446,7 +583,7 @@ static int bbgpio_irq_f(rtdm_irq_t *irq)
+ 
+     // wake up any read methods that are waiting for the interrupt
+     rtdm_event_pulse(&data->irq_event);
+-    return 1;
++    return RTDM_IRQ_HANDLED;
+ }
+ 
+ 
+-- 
+2.7.4
+
